@@ -1,19 +1,33 @@
 # Use sqlite database
 import sqlite3
 from sqlite3 import Error
+from datetime import datetime
 
 def create_connection():
     """Create a database connection"""
     conn = None
     try:
         conn = sqlite3.connect('hipster_cookbooks.db')
-        print(f"Successfully connected to SQLite {sqlite3.version} ")
+        print("Successfully connected to SQLite database")
         return conn
     except Error as e:
         print(f"Error establishing connection with the void: {e}")
         return None
 
-# Function to Create a table for storing the cookbooks
+def drop_all_tables(conn):
+    """Drop all existing tables to start fresh"""
+    try:
+        cursor = conn.cursor()
+        # Drop tables in correct order (due to foreign key constraints)
+        cursor.execute("DROP TABLE IF EXISTS cookbook_tags")
+        cursor.execute("DROP TABLE IF EXISTS tags")
+        cursor.execute("DROP TABLE IF EXISTS borrowing_history")
+        cursor.execute("DROP TABLE IF EXISTS cookbooks")
+        conn.commit()
+        print("All tables dropped successfully")
+    except Error as e:
+        print(f"Error dropping tables: {e}")
+
 def create_table(conn):
     """Create a table structure"""
     try:
@@ -29,25 +43,20 @@ def create_table(conn):
         );"""
 
         # Calling the contructor for the cursor object to create a new cursor
-        # (That lets us work with the database)
         cursor = conn.cursor()
         cursor.execute(sql_create_cookbooks_table)
         print("Successfully created a database structure")
     except Error as e:
         print(f"Error creating table: {e}")
 
-# Function will insert a new cookbook record inot the database table
 def insert_cookbook(conn, cookbook):
-    """Add a new cookbook to your shelf )"""
+    """Add a new cookbook to your shelf"""
     sql = '''INSERT INTO cookbooks(title, author, year_published, aesthetic_rating, instagram_worthy, cover_color)
              VALUES(?,?,?,?,?,?)'''
     
-    # Use the connection to the database to insert the new record
     try:
-        # Create a new cursor (this is like a pointer that lets us traverse the database)
         cursor = conn.cursor()
         cursor.execute(sql, cookbook)
-        # Commit the changes
         conn.commit()
         print(f"Successfully curated cookbook with id: {cursor.lastrowid}")
         return cursor.lastrowid
@@ -55,16 +64,13 @@ def insert_cookbook(conn, cookbook):
         print(f"Error adding to collection: {e}")
         return None
 
-# Function to retreive the cookbook from the database
 def get_all_cookbooks(conn):
-    """Browse your entire collection """
+    """Browse your entire collection"""
     try:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM cookbooks")
-        # Put the resultset of cookbook into a list called books
         books = cursor.fetchall()
-
-        # Iterate through the list of books and display the info for each cookbook
+        
         for book in books:
             print(f"ID: {book[0]}")
             print(f"Title: {book[1]}")
@@ -79,15 +85,130 @@ def get_all_cookbooks(conn):
         print(f"Error retrieving collection: {e}")
         return []
 
-# Main function is called when the program executes
-# It directs the show
+def create_tag_tables(conn):
+    """Create tables for recipe tagging"""
+    try:
+        # Create tags table
+        sql_create_tags = """
+        CREATE TABLE IF NOT EXISTS tags (
+            tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag_name TEXT NOT NULL UNIQUE
+        );"""
+
+        # Create cookbook-tags relationship table
+        sql_create_cookbook_tags = """
+        CREATE TABLE IF NOT EXISTS cookbook_tags (
+            cookbook_id INTEGER,
+            tag_id INTEGER,
+            FOREIGN KEY (cookbook_id) REFERENCES cookbooks (id),
+            FOREIGN KEY (tag_id) REFERENCES tags (tag_id),
+            PRIMARY KEY (cookbook_id, tag_id)
+        );"""
+
+        cursor = conn.cursor()
+        cursor.execute(sql_create_tags)
+        cursor.execute(sql_create_cookbook_tags)
+        print("Successfully created tag tables")
+    except Error as e:
+        print(f"Error creating tag tables: {e}")
+
+def add_recipe_tags(conn, cookbook_id, tags):
+    """Add tags to a cookbook (e.g., 'gluten-free', 'plant-based', 'artisanal')"""
+    try:
+        cursor = conn.cursor()
+        # Validate cookbook exists
+        cursor.execute("SELECT id FROM cookbooks WHERE id = ?", (cookbook_id,))
+        if not cursor.fetchone():
+            print(f"Error: Cookbook {cookbook_id} not found")
+            return False
+
+        # Add each tag
+        for tag in tags:
+            cursor.execute("INSERT OR IGNORE INTO tags (tag_name) VALUES (?)", (tag.lower(),))
+            cursor.execute("SELECT tag_id FROM tags WHERE tag_name = ?", (tag.lower(),))
+            tag_id = cursor.fetchone()[0]
+            
+            # Link tag to cookbook
+            cursor.execute("""
+                INSERT OR IGNORE INTO cookbook_tags (cookbook_id, tag_id)
+                VALUES (?, ?)
+            """, (cookbook_id, tag_id))
+
+        conn.commit()
+        print(f"Successfully added tags {tags} to cookbook {cookbook_id}")
+        return True
+    except Error as e:
+        print(f"Error adding tags: {e}")
+        return False
+
+def create_borrowing_table(conn):
+    """Create table for tracking borrowed cookbooks"""
+    try:
+        sql_create_borrowing = """
+        CREATE TABLE IF NOT EXISTS borrowing_history (
+            borrow_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cookbook_id INTEGER,
+            friend_name TEXT NOT NULL,
+            date_borrowed DATE NOT NULL,
+            date_returned DATE,
+            FOREIGN KEY (cookbook_id) REFERENCES cookbooks (id)
+        );"""
+        
+        cursor = conn.cursor()
+        cursor.execute(sql_create_borrowing)
+        print("Successfully created borrowing history table")
+    except Error as e:
+        print(f"Error creating borrowing table: {e}")
+
+def track_borrowed_cookbook(conn, cookbook_id, friend_name, date_borrowed):
+    """Track which friend borrowed your cookbook and when"""
+    try:
+        # Input validation
+        if not friend_name or not friend_name.strip():
+            print("Error: Friend name cannot be empty")
+            return False
+            
+        cursor = conn.cursor()
+        # Validate cookbook exists
+        cursor.execute("SELECT id FROM cookbooks WHERE id = ?", (cookbook_id,))
+        if not cursor.fetchone():
+            print(f"Error: Cookbook {cookbook_id} not found")
+            return False
+            
+        # Check if already borrowed
+        cursor.execute("""
+            SELECT borrow_id FROM borrowing_history 
+            WHERE cookbook_id = ? AND date_returned IS NULL
+        """, (cookbook_id,))
+        if cursor.fetchone():
+            print(f"Error: Cookbook {cookbook_id} is already borrowed")
+            return False
+            
+        # Record the borrowing
+        cursor.execute("""
+            INSERT INTO borrowing_history (cookbook_id, friend_name, date_borrowed)
+            VALUES (?, ?, ?)
+        """, (cookbook_id, friend_name, date_borrowed))
+            
+        conn.commit()
+        print(f"Successfully tracked cookbook {cookbook_id} borrowed by {friend_name}")
+        return True
+    except Error as e:
+        print(f"Error tracking borrowed cookbook: {e}")
+        return False
+
 def main():
     # Establish connection to our artisanal database
     conn = create_connection()
     
     if conn is not None:
-        # Create our free-range table
+        # Drop existing tables first
+        drop_all_tables(conn)
+        
+        # Create all necessary tables
         create_table(conn)
+        create_tag_tables(conn)
+        create_borrowing_table(conn)
         
         # Insert some carefully curated sample cookbooks
         cookbooks = [
@@ -103,23 +224,28 @@ def main():
              'Juniper Vinegar-Smith', 2023, 5, True, 'Beige')
         ]
         
-        # Display our list of books
         print("\nCurating your cookbook collection...")
-
-        # Insert cookbooks into the database
+        cookbook_ids = []
         for cookbook in cookbooks:
-            insert_cookbook(conn, cookbook)
+            cookbook_id = insert_cookbook(conn, cookbook)
+            if cookbook_id:
+                cookbook_ids.append(cookbook_id)
         
-        # Get the cookbooks from the database
+        # Test new features
+        print("\nTesting new features...")
+        add_recipe_tags(conn, cookbook_ids[0], ['foraging', 'sustainable'])
+        add_recipe_tags(conn, cookbook_ids[1], ['minimalist', 'artisanal'])
+        
+        track_borrowed_cookbook(conn, cookbook_ids[0], "Luna Moonbeam", "2024-02-19")
+        track_borrowed_cookbook(conn, cookbook_ids[2], "Cedar Starlight", "2024-02-15")
+        
         print("\nYour carefully curated collection:")
         get_all_cookbooks(conn)
         
-        # Close the database connection
         conn.close()
         print("\nDatabase connection closed")
     else:
         print("Error! The universe is not aligned for database connections right now.")
 
-# Code to call the main function
 if __name__ == '__main__':
     main()
